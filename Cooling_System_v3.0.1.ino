@@ -133,7 +133,7 @@ void RelayActivationLogic(void *parameter) {
     }
 
     // After 3 minutes, turn OFF relays
-    if (relayActive && (millis() - relayStartTime >= 180000)) {
+    if (relayActive && (millis() - relayStartTime >= 300000)) {
       digitalWrite(ExhaustRelay, HIGH);
       digitalWrite(WaterPumpRelay, LOW);
       relayActive = false;
