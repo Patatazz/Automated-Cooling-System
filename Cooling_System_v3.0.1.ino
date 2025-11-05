@@ -5,9 +5,11 @@
 #include <LiquidCrystal_I2C.h>
 
 // Temperature and Humidity Sensor
-#define DHT_Sensor_1 16
-#define DHT_Sensor_2 15
-#define DHTTYPE DHT22
+#define DHT_Sensor_1 17
+#define DHT_Sensor_2 16
+
+#define DHTTYPE1 DHT22  // Sensor 1 type
+#define DHTTYPE2 DHT11  // Sensor 2 type
 
 // Relays
 #define ExhaustRelay 13
@@ -19,8 +21,8 @@
 // For LCD I2C 16x2 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-DHT dht1(DHT_Sensor_1, DHTTYPE);
-DHT dht2(DHT_Sensor_2, DHTTYPE);
+DHT dht1(DHT_Sensor_1, DHTTYPE1);
+DHT dht2(DHT_Sensor_2, DHTTYPE1);
 
 // For Temperature Logic
 float avgTemp1 = 0, avgHum1 = 0;
@@ -65,7 +67,7 @@ void TempChange(void* parameter){
 // Displaying the Temp and Humidity
 void TempDisplay(void* parameter){
   unsigned long tempLimitDisplayTime = 0;
-  const unsigned long displayDuration = 2000;
+  const unsigned long displayDuration = 300;
   
   while (true) {
 
@@ -116,15 +118,16 @@ void RelayActivationLogic(void *parameter) {
   unsigned long relayStartTime = 0;
 
   while (true) {
-    if (relayDataReady){
+    if (relayDataReady && !isnan(avgTemp1) && !isnan(avgTemp2)){
       relayDataReady = false;
       int totalTemp = (avgTemp1 + avgTemp2) / 2;
 
       if (!relayActive && totalTemp > tempLimit) {
         // Turn ON relays
         Serial.println("Activating Exhaust Fan and Water Pump!");
-        digitalWrite(ExhaustRelay, LOW);   // active LOW
-        digitalWrite(WaterPumpRelay, HIGH); 
+        digitalWrite(ExhaustRelay, LOW);   // active on LOW
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        digitalWrite(WaterPumpRelay, LOW); // active on LOW 
         relayActive = true;
         relayStartTime = millis();
       }
@@ -133,11 +136,11 @@ void RelayActivationLogic(void *parameter) {
     }
 
     // After 3 minutes, turn OFF relays
-    if (relayActive && (millis() - relayStartTime >= 300000)) {
+    if (relayActive && (millis() - relayStartTime >= 180000)) {
       digitalWrite(ExhaustRelay, HIGH);
-      digitalWrite(WaterPumpRelay, LOW);
+      digitalWrite(WaterPumpRelay, HIGH);
       relayActive = false;
-      Serial.println("Relay OFF after 3 minutes");
+      Serial.println("Relay OFF after 5 minutes");
     }
     vTaskDelay(pdMS_TO_TICKS(2000));
   }
@@ -145,7 +148,7 @@ void RelayActivationLogic(void *parameter) {
 
 // For Temp and Humnidity Reading Only
 void TempHumReading(void *parameter){
-  const int totalSamples = 10;
+  const int totalSamples = 3;
   const int delayPerSample = 2000;
 
   while (1) {
@@ -154,18 +157,32 @@ void TempHumReading(void *parameter){
     int validCount1 = 0, validCount2 = 0;
 
     for (int currentSample = 0; currentSample < totalSamples; currentSample++) {
-      // Read first sensor
-      float t1 = dht1.readTemperature();
-      float h1 = dht1.readHumidity();
+
+      // Read first sensor with retry
+      float t1 = NAN, h1 = NAN;
+      for (int retry = 0; retry < 3; retry++) {
+        t1 = dht1.readTemperature();
+        h1 = dht1.readHumidity();
+        if (!isnan(t1) && !isnan(h1)) break;
+        vTaskDelay(pdMS_TO_TICKS(100)); // Short delay before retry
+      }
+
       if (!isnan(t1) && !isnan(h1)) {
         tempSum1 += t1;
         humSum1  += h1;
         validCount1++;
       }
 
-      // Read second sensor
-      float t2 = dht2.readTemperature();
-      float h2 = dht2.readHumidity();
+
+      // Read Second sensor with retry
+      float t2 = NAN, h2 = NAN;
+      for (int retry = 0; retry < 3; retry++) {
+        t2 = dht2.readTemperature();
+        h2 = dht2.readHumidity();
+        if (!isnan(t2) && !isnan(h2)) break;
+        vTaskDelay(pdMS_TO_TICKS(100));
+      }
+      
       if (!isnan(t2) && !isnan(h2)) {
         tempSum2 += t2;
         humSum2  += h2;
@@ -208,6 +225,17 @@ void TempHumReading(void *parameter){
 void setup() {
   
   Serial.begin(115200);
+
+  // Check reset reason
+  esp_reset_reason_t reason = esp_reset_reason();
+  Serial.print("Reset reason: ");
+  switch(reason) {
+    case ESP_RST_POWERON: Serial.println("Power-on reset"); break;
+    case ESP_RST_BROWNOUT: Serial.println("BROWNOUT RESET!"); break; // This is your culprit!
+    case ESP_RST_SW: Serial.println("Software reset"); break;
+    case ESP_RST_PANIC: Serial.println("Exception/panic"); break;
+    default: Serial.println("Unknown"); break;
+  }
   
   // Starting DHT22 Temp and Humidity
   dht1.begin();
@@ -227,6 +255,7 @@ void setup() {
   pinMode(TempToggleButton, INPUT_PULLUP);
 
   digitalWrite(ExhaustRelay, HIGH);
+  digitalWrite(WaterPumpRelay, HIGH);
   
   xTaskCreatePinnedToCore(
     TempHumReading,       // Task function
